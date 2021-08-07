@@ -109,6 +109,7 @@ module.exports = __webpack_require__(/*! ./lib/axios */ "./node_modules/axios/li
 
 var utils = __webpack_require__(/*! ./../utils */ "./node_modules/axios/lib/utils.js");
 var settle = __webpack_require__(/*! ./../core/settle */ "./node_modules/axios/lib/core/settle.js");
+var cookies = __webpack_require__(/*! ./../helpers/cookies */ "./node_modules/axios/lib/helpers/cookies.js");
 var buildURL = __webpack_require__(/*! ./../helpers/buildURL */ "./node_modules/axios/lib/helpers/buildURL.js");
 var buildFullPath = __webpack_require__(/*! ../core/buildFullPath */ "./node_modules/axios/lib/core/buildFullPath.js");
 var parseHeaders = __webpack_require__(/*! ./../helpers/parseHeaders */ "./node_modules/axios/lib/helpers/parseHeaders.js");
@@ -129,7 +130,7 @@ module.exports = function xhrAdapter(config) {
     // HTTP basic authentication
     if (config.auth) {
       var username = config.auth.username || '';
-      var password = config.auth.password || '';
+      var password = config.auth.password ? unescape(encodeURIComponent(config.auth.password)) : '';
       requestHeaders.Authorization = 'Basic ' + btoa(username + ':' + password);
     }
 
@@ -210,8 +211,6 @@ module.exports = function xhrAdapter(config) {
     // This is only done if running in a standard browser environment.
     // Specifically not if we're in a web worker, or react-native.
     if (utils.isStandardBrowserEnv()) {
-      var cookies = __webpack_require__(/*! ./../helpers/cookies */ "./node_modules/axios/lib/helpers/cookies.js");
-
       // Add xsrf header
       var xsrfValue = (config.withCredentials || isURLSameOrigin(fullPath)) && config.xsrfCookieName ?
         cookies.read(config.xsrfCookieName) :
@@ -277,7 +276,7 @@ module.exports = function xhrAdapter(config) {
       });
     }
 
-    if (requestData === undefined) {
+    if (!requestData) {
       requestData = null;
     }
 
@@ -345,6 +344,9 @@ axios.all = function all(promises) {
   return Promise.all(promises);
 };
 axios.spread = __webpack_require__(/*! ./helpers/spread */ "./node_modules/axios/lib/helpers/spread.js");
+
+// Expose isAxiosError
+axios.isAxiosError = __webpack_require__(/*! ./helpers/isAxiosError */ "./node_modules/axios/lib/helpers/isAxiosError.js");
 
 module.exports = axios;
 
@@ -554,9 +556,10 @@ Axios.prototype.getUri = function getUri(config) {
 utils.forEach(['delete', 'get', 'head', 'options'], function forEachMethodNoData(method) {
   /*eslint func-names:0*/
   Axios.prototype[method] = function(url, config) {
-    return this.request(utils.merge(config || {}, {
+    return this.request(mergeConfig(config || {}, {
       method: method,
-      url: url
+      url: url,
+      data: (config || {}).data
     }));
   };
 });
@@ -564,7 +567,7 @@ utils.forEach(['delete', 'get', 'head', 'options'], function forEachMethodNoData
 utils.forEach(['post', 'put', 'patch'], function forEachMethodWithData(method) {
   /*eslint func-names:0*/
   Axios.prototype[method] = function(url, data, config) {
-    return this.request(utils.merge(config || {}, {
+    return this.request(mergeConfig(config || {}, {
       method: method,
       url: url,
       data: data
@@ -824,7 +827,7 @@ module.exports = function enhanceError(error, config, code, request, response) {
   error.response = response;
   error.isAxiosError = true;
 
-  error.toJSON = function() {
+  error.toJSON = function toJSON() {
     return {
       // Standard
       message: this.message,
@@ -873,59 +876,73 @@ module.exports = function mergeConfig(config1, config2) {
   config2 = config2 || {};
   var config = {};
 
-  var valueFromConfig2Keys = ['url', 'method', 'params', 'data'];
-  var mergeDeepPropertiesKeys = ['headers', 'auth', 'proxy'];
+  var valueFromConfig2Keys = ['url', 'method', 'data'];
+  var mergeDeepPropertiesKeys = ['headers', 'auth', 'proxy', 'params'];
   var defaultToConfig2Keys = [
-    'baseURL', 'url', 'transformRequest', 'transformResponse', 'paramsSerializer',
-    'timeout', 'withCredentials', 'adapter', 'responseType', 'xsrfCookieName',
-    'xsrfHeaderName', 'onUploadProgress', 'onDownloadProgress',
-    'maxContentLength', 'validateStatus', 'maxRedirects', 'httpAgent',
-    'httpsAgent', 'cancelToken', 'socketPath'
+    'baseURL', 'transformRequest', 'transformResponse', 'paramsSerializer',
+    'timeout', 'timeoutMessage', 'withCredentials', 'adapter', 'responseType', 'xsrfCookieName',
+    'xsrfHeaderName', 'onUploadProgress', 'onDownloadProgress', 'decompress',
+    'maxContentLength', 'maxBodyLength', 'maxRedirects', 'transport', 'httpAgent',
+    'httpsAgent', 'cancelToken', 'socketPath', 'responseEncoding'
   ];
+  var directMergeKeys = ['validateStatus'];
+
+  function getMergedValue(target, source) {
+    if (utils.isPlainObject(target) && utils.isPlainObject(source)) {
+      return utils.merge(target, source);
+    } else if (utils.isPlainObject(source)) {
+      return utils.merge({}, source);
+    } else if (utils.isArray(source)) {
+      return source.slice();
+    }
+    return source;
+  }
+
+  function mergeDeepProperties(prop) {
+    if (!utils.isUndefined(config2[prop])) {
+      config[prop] = getMergedValue(config1[prop], config2[prop]);
+    } else if (!utils.isUndefined(config1[prop])) {
+      config[prop] = getMergedValue(undefined, config1[prop]);
+    }
+  }
 
   utils.forEach(valueFromConfig2Keys, function valueFromConfig2(prop) {
-    if (typeof config2[prop] !== 'undefined') {
-      config[prop] = config2[prop];
+    if (!utils.isUndefined(config2[prop])) {
+      config[prop] = getMergedValue(undefined, config2[prop]);
     }
   });
 
-  utils.forEach(mergeDeepPropertiesKeys, function mergeDeepProperties(prop) {
-    if (utils.isObject(config2[prop])) {
-      config[prop] = utils.deepMerge(config1[prop], config2[prop]);
-    } else if (typeof config2[prop] !== 'undefined') {
-      config[prop] = config2[prop];
-    } else if (utils.isObject(config1[prop])) {
-      config[prop] = utils.deepMerge(config1[prop]);
-    } else if (typeof config1[prop] !== 'undefined') {
-      config[prop] = config1[prop];
-    }
-  });
+  utils.forEach(mergeDeepPropertiesKeys, mergeDeepProperties);
 
   utils.forEach(defaultToConfig2Keys, function defaultToConfig2(prop) {
-    if (typeof config2[prop] !== 'undefined') {
-      config[prop] = config2[prop];
-    } else if (typeof config1[prop] !== 'undefined') {
-      config[prop] = config1[prop];
+    if (!utils.isUndefined(config2[prop])) {
+      config[prop] = getMergedValue(undefined, config2[prop]);
+    } else if (!utils.isUndefined(config1[prop])) {
+      config[prop] = getMergedValue(undefined, config1[prop]);
+    }
+  });
+
+  utils.forEach(directMergeKeys, function merge(prop) {
+    if (prop in config2) {
+      config[prop] = getMergedValue(config1[prop], config2[prop]);
+    } else if (prop in config1) {
+      config[prop] = getMergedValue(undefined, config1[prop]);
     }
   });
 
   var axiosKeys = valueFromConfig2Keys
     .concat(mergeDeepPropertiesKeys)
-    .concat(defaultToConfig2Keys);
+    .concat(defaultToConfig2Keys)
+    .concat(directMergeKeys);
 
   var otherKeys = Object
-    .keys(config2)
+    .keys(config1)
+    .concat(Object.keys(config2))
     .filter(function filterAxiosKeys(key) {
       return axiosKeys.indexOf(key) === -1;
     });
 
-  utils.forEach(otherKeys, function otherKeysDefaultToConfig2(prop) {
-    if (typeof config2[prop] !== 'undefined') {
-      config[prop] = config2[prop];
-    } else if (typeof config1[prop] !== 'undefined') {
-      config[prop] = config1[prop];
-    }
-  });
+  utils.forEach(otherKeys, mergeDeepProperties);
 
   return config;
 };
@@ -954,7 +971,7 @@ var createError = __webpack_require__(/*! ./createError */ "./node_modules/axios
  */
 module.exports = function settle(resolve, reject, response) {
   var validateStatus = response.config.validateStatus;
-  if (!validateStatus || validateStatus(response.status)) {
+  if (!response.status || !validateStatus || validateStatus(response.status)) {
     resolve(response);
   } else {
     reject(createError(
@@ -1086,6 +1103,7 @@ var defaults = {
   xsrfHeaderName: 'X-XSRF-TOKEN',
 
   maxContentLength: -1,
+  maxBodyLength: -1,
 
   validateStatus: function validateStatus(status) {
     return status >= 200 && status < 300;
@@ -1149,7 +1167,6 @@ var utils = __webpack_require__(/*! ./../utils */ "./node_modules/axios/lib/util
 
 function encode(val) {
   return encodeURIComponent(val).
-    replace(/%40/gi, '@').
     replace(/%3A/gi, ':').
     replace(/%24/g, '$').
     replace(/%2C/gi, ',').
@@ -1330,6 +1347,29 @@ module.exports = function isAbsoluteURL(url) {
   // RFC 3986 defines scheme name as a sequence of characters beginning with a letter and followed
   // by any combination of letters, digits, plus, period, or hyphen.
   return /^([a-z][a-z\d\+\-\.]*:)?\/\//i.test(url);
+};
+
+
+/***/ }),
+
+/***/ "./node_modules/axios/lib/helpers/isAxiosError.js":
+/*!********************************************************!*\
+  !*** ./node_modules/axios/lib/helpers/isAxiosError.js ***!
+  \********************************************************/
+/*! no static exports found */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+
+
+/**
+ * Determines whether the payload is an error thrown by Axios
+ *
+ * @param {*} payload The value to test
+ * @returns {boolean} True if the payload is an error thrown by Axios, otherwise false
+ */
+module.exports = function isAxiosError(payload) {
+  return (typeof payload === 'object') && (payload.isAxiosError === true);
 };
 
 
@@ -1659,6 +1699,21 @@ function isObject(val) {
 }
 
 /**
+ * Determine if a value is a plain Object
+ *
+ * @param {Object} val The value to test
+ * @return {boolean} True if value is a plain Object, otherwise false
+ */
+function isPlainObject(val) {
+  if (toString.call(val) !== '[object Object]') {
+    return false;
+  }
+
+  var prototype = Object.getPrototypeOf(val);
+  return prototype === null || prototype === Object.prototype;
+}
+
+/**
  * Determine if a value is a Date
  *
  * @param {Object} val The value to test
@@ -1814,34 +1869,12 @@ function forEach(obj, fn) {
 function merge(/* obj1, obj2, obj3, ... */) {
   var result = {};
   function assignValue(val, key) {
-    if (typeof result[key] === 'object' && typeof val === 'object') {
+    if (isPlainObject(result[key]) && isPlainObject(val)) {
       result[key] = merge(result[key], val);
-    } else {
-      result[key] = val;
-    }
-  }
-
-  for (var i = 0, l = arguments.length; i < l; i++) {
-    forEach(arguments[i], assignValue);
-  }
-  return result;
-}
-
-/**
- * Function equal to merge with the difference being that no reference
- * to original objects is kept.
- *
- * @see merge
- * @param {Object} obj1 Object to merge
- * @returns {Object} Result of all merge properties
- */
-function deepMerge(/* obj1, obj2, obj3, ... */) {
-  var result = {};
-  function assignValue(val, key) {
-    if (typeof result[key] === 'object' && typeof val === 'object') {
-      result[key] = deepMerge(result[key], val);
-    } else if (typeof val === 'object') {
-      result[key] = deepMerge({}, val);
+    } else if (isPlainObject(val)) {
+      result[key] = merge({}, val);
+    } else if (isArray(val)) {
+      result[key] = val.slice();
     } else {
       result[key] = val;
     }
@@ -1872,6 +1905,19 @@ function extend(a, b, thisArg) {
   return a;
 }
 
+/**
+ * Remove byte order marker. This catches EF BB BF (the UTF-8 BOM)
+ *
+ * @param {string} content with BOM
+ * @return {string} content value without BOM
+ */
+function stripBOM(content) {
+  if (content.charCodeAt(0) === 0xFEFF) {
+    content = content.slice(1);
+  }
+  return content;
+}
+
 module.exports = {
   isArray: isArray,
   isArrayBuffer: isArrayBuffer,
@@ -1881,6 +1927,7 @@ module.exports = {
   isString: isString,
   isNumber: isNumber,
   isObject: isObject,
+  isPlainObject: isPlainObject,
   isUndefined: isUndefined,
   isDate: isDate,
   isFile: isFile,
@@ -1891,9 +1938,9 @@ module.exports = {
   isStandardBrowserEnv: isStandardBrowserEnv,
   forEach: forEach,
   merge: merge,
-  deepMerge: deepMerge,
   extend: extend,
-  trim: trim
+  trim: trim,
+  stripBOM: stripBOM
 };
 
 
@@ -37343,9 +37390,20 @@ module.exports = function(module) {
 /*! no static exports found */
 /***/ (function(module, exports, __webpack_require__) {
 
+/**
+ * First we will load all of this project's JavaScript dependencies which
+ * includes Vue and other libraries. It is a great starting point when
+ * building robust, powerful web applications using Vue and Laravel.
+ */
 __webpack_require__(/*! ./bootstrap */ "./resources/js/bootstrap.js");
 
 __webpack_require__(/*! ./users */ "./resources/js/users.js");
+
+__webpack_require__(/*! ./jquery.jTinder */ "./resources/js/jquery.jTinder.js");
+
+__webpack_require__(/*! ./jquery.transform2d */ "./resources/js/jquery.transform2d.js");
+
+__webpack_require__(!(function webpackMissingModule() { var e = new Error("Cannot find module './jTinder'"); e.code = 'MODULE_NOT_FOUND'; throw e; }()));
 
 /***/ }),
 
@@ -37394,6 +37452,702 @@ window.axios.defaults.headers.common['X-Requested-With'] = 'XMLHttpRequest';
 
 /***/ }),
 
+/***/ "./resources/js/jquery.jTinder.js":
+/*!****************************************!*\
+  !*** ./resources/js/jquery.jTinder.js ***!
+  \****************************************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+/*
+ * jTinder v.1.0.0
+ * https://github.com/do-web/jTinder
+ * Requires jQuery 1.7+, jQuery transform2d
+ *
+ * Copyright (c) 2014, Dominik Weber
+ * Licensed under GPL Version 2.
+ * https://github.com/do-web/jTinder/blob/master/LICENSE
+ */
+;
+
+(function ($, window, document, undefined) {
+  var pluginName = "jTinder",
+      defaults = {
+    onDislike: null,
+    onLike: null,
+    animationRevertSpeed: 200,
+    animationSpeed: 400,
+    threshold: 1,
+    likeSelector: '.like',
+    dislikeSelector: '.dislike'
+  };
+  var container = null;
+  var panes = null;
+  var $that = null;
+  var xStart = 0;
+  var yStart = 0;
+  var touchStart = false;
+  var posX = 0,
+      posY = 0,
+      lastPosX = 0,
+      lastPosY = 0,
+      pane_width = 0,
+      pane_count = 0,
+      current_pane = 0;
+
+  function Plugin(element, options) {
+    this.element = element;
+    this.settings = $.extend({}, defaults, options);
+    this._defaults = defaults;
+    this._name = pluginName;
+    this.init(element);
+  }
+
+  Plugin.prototype = {
+    init: function init(element) {
+      container = $(">ul", element);
+      panes = $(">ul>li", element);
+      pane_width = container.width();
+      pane_count = panes.length;
+      current_pane = panes.length - 1;
+      $that = this;
+      $(element).bind('touchstart mousedown', this.handler);
+      $(element).bind('touchmove mousemove', this.handler);
+      $(element).bind('touchend mouseup', this.handler);
+    },
+    showPane: function showPane(index) {
+      panes.eq(current_pane).hide();
+      current_pane = index;
+    },
+    next: function next() {
+      return this.showPane(current_pane - 1);
+    },
+    dislike: function dislike() {
+      panes.eq(current_pane).animate({
+        "transform": "translate(-" + pane_width + "px," + pane_width * -1.5 + "px) rotate(-60deg)"
+      }, $that.settings.animationSpeed, function () {
+        if ($that.settings.onDislike) {
+          $that.settings.onDislike(panes.eq(current_pane));
+        }
+
+        $that.next();
+      });
+    },
+    like: function like() {
+      panes.eq(current_pane).animate({
+        "transform": "translate(" + pane_width + "px," + pane_width * -1.5 + "px) rotate(60deg)"
+      }, $that.settings.animationSpeed, function () {
+        if ($that.settings.onLike) {
+          $that.settings.onLike(panes.eq(current_pane));
+        }
+
+        $that.next();
+      });
+    },
+    handler: function handler(ev) {
+      ev.preventDefault();
+
+      switch (ev.type) {
+        case 'touchstart':
+          if (touchStart === false) {
+            touchStart = true;
+            xStart = ev.originalEvent.touches[0].pageX;
+            yStart = ev.originalEvent.touches[0].pageY;
+          }
+
+        case 'mousedown':
+          if (touchStart === false) {
+            touchStart = true;
+            xStart = ev.pageX;
+            yStart = ev.pageY;
+          }
+
+        case 'mousemove':
+        case 'touchmove':
+          if (touchStart === true) {
+            var pageX = typeof ev.pageX == 'undefined' ? ev.originalEvent.touches[0].pageX : ev.pageX;
+            var pageY = typeof ev.pageY == 'undefined' ? ev.originalEvent.touches[0].pageY : ev.pageY;
+            var deltaX = parseInt(pageX) - parseInt(xStart);
+            var deltaY = parseInt(pageY) - parseInt(yStart);
+            var percent = 100 / pane_width * deltaX / pane_count;
+            posX = deltaX + lastPosX;
+            posY = deltaY + lastPosY;
+            panes.eq(current_pane).css("transform", "translate(" + posX + "px," + posY + "px) rotate(" + percent / 2 + "deg)");
+            var opa = Math.abs(deltaX) / $that.settings.threshold / 100 + 0.2;
+
+            if (opa > 1.0) {
+              opa = 1.0;
+            }
+
+            if (posX >= 0) {
+              panes.eq(current_pane).find($that.settings.likeSelector).css('opacity', opa);
+              panes.eq(current_pane).find($that.settings.dislikeSelector).css('opacity', 0);
+            } else if (posX < 0) {
+              panes.eq(current_pane).find($that.settings.dislikeSelector).css('opacity', opa);
+              panes.eq(current_pane).find($that.settings.likeSelector).css('opacity', 0);
+            }
+          }
+
+          break;
+
+        case 'mouseup':
+        case 'touchend':
+          touchStart = false;
+          var pageX = typeof ev.pageX == 'undefined' ? ev.originalEvent.changedTouches[0].pageX : ev.pageX;
+          var pageY = typeof ev.pageY == 'undefined' ? ev.originalEvent.changedTouches[0].pageY : ev.pageY;
+          var deltaX = parseInt(pageX) - parseInt(xStart);
+          var deltaY = parseInt(pageY) - parseInt(yStart);
+          posX = deltaX + lastPosX;
+          posY = deltaY + lastPosY;
+          var opa = Math.abs(Math.abs(deltaX) / $that.settings.threshold / 100 + 0.2);
+
+          if (opa >= 1) {
+            if (posX > 0) {
+              panes.eq(current_pane).animate({
+                "transform": "translate(" + pane_width + "px," + (posY + pane_width) + "px) rotate(60deg)"
+              }, $that.settings.animationSpeed, function () {
+                if ($that.settings.onLike) {
+                  $that.settings.onLike(panes.eq(current_pane));
+                }
+
+                $that.next();
+              });
+            } else {
+              panes.eq(current_pane).animate({
+                "transform": "translate(-" + pane_width + "px," + (posY + pane_width) + "px) rotate(-60deg)"
+              }, $that.settings.animationSpeed, function () {
+                if ($that.settings.onDislike) {
+                  $that.settings.onDislike(panes.eq(current_pane));
+                }
+
+                $that.next();
+              });
+            }
+          } else {
+            lastPosX = 0;
+            lastPosY = 0;
+            panes.eq(current_pane).animate({
+              "transform": "translate(0px,0px) rotate(0deg)"
+            }, $that.settings.animationRevertSpeed);
+            panes.eq(current_pane).find($that.settings.likeSelector).animate({
+              "opacity": 0
+            }, $that.settings.animationRevertSpeed);
+            panes.eq(current_pane).find($that.settings.dislikeSelector).animate({
+              "opacity": 0
+            }, $that.settings.animationRevertSpeed);
+          }
+
+          break;
+      }
+    }
+  };
+
+  $.fn[pluginName] = function (options) {
+    this.each(function () {
+      if (!$.data(this, "plugin_" + pluginName)) {
+        $.data(this, "plugin_" + pluginName, new Plugin(this, options));
+      } else if ($.isFunction(Plugin.prototype[options])) {
+        $.data(this, 'plugin_' + pluginName)[options]();
+      }
+    });
+    return this;
+  };
+})(jQuery, window, document);
+
+/***/ }),
+
+/***/ "./resources/js/jquery.transform2d.js":
+/*!********************************************!*\
+  !*** ./resources/js/jquery.transform2d.js ***!
+  \********************************************/
+/*! no static exports found */
+/***/ (function(module, exports) {
+
+/*
+ * transform: A jQuery cssHooks adding cross-browser 2d transform capabilities to $.fn.css() and $.fn.animate()
+ *
+ * limitations:
+ * - requires jQuery 1.4.3+
+ * - Should you use the *translate* property, then your elements need to be absolutely positionned in a relatively positionned wrapper **or it will fail in IE678**.
+ * - transformOrigin is not accessible
+ *
+ * latest version and complete README available on Github:
+ * https://github.com/louisremi/jquery.transform.js
+ *
+ * Copyright 2011 @louis_remi
+ * Licensed under the MIT license.
+ *
+ * This saved you an hour of work?
+ * Send me music http://www.amazon.co.uk/wishlist/HNTU0468LQON
+ *
+ */
+(function ($, window, document, Math, undefined) {
+  /*
+   * Feature tests and global variables
+   */
+  var div = document.createElement("div"),
+      divStyle = div.style,
+      suffix = "Transform",
+      testProperties = ["O" + suffix, "ms" + suffix, "Webkit" + suffix, "Moz" + suffix],
+      i = testProperties.length,
+      supportProperty,
+      supportMatrixFilter,
+      supportFloat32Array = ("Float32Array" in window),
+      propertyHook,
+      propertyGet,
+      rMatrix = /Matrix([^)]*)/,
+      rAffine = /^\s*matrix\(\s*1\s*,\s*0\s*,\s*0\s*,\s*1\s*(?:,\s*0(?:px)?\s*){2}\)\s*$/,
+      _transform = "transform",
+      _transformOrigin = "transformOrigin",
+      _translate = "translate",
+      _rotate = "rotate",
+      _scale = "scale",
+      _skew = "skew",
+      _matrix = "matrix"; // test different vendor prefixes of these properties
+
+  while (i--) {
+    if (testProperties[i] in divStyle) {
+      $.support[_transform] = supportProperty = testProperties[i];
+      $.support[_transformOrigin] = supportProperty + "Origin";
+      continue;
+    }
+  } // IE678 alternative
+
+
+  if (!supportProperty) {
+    $.support.matrixFilter = supportMatrixFilter = divStyle.filter === "";
+  } // px isn't the default unit of these properties
+
+
+  $.cssNumber[_transform] = $.cssNumber[_transformOrigin] = true;
+  /*
+   * fn.css() hooks
+   */
+
+  if (supportProperty && supportProperty != _transform) {
+    // Modern browsers can use jQuery.cssProps as a basic hook
+    $.cssProps[_transform] = supportProperty;
+    $.cssProps[_transformOrigin] = supportProperty + "Origin"; // Firefox needs a complete hook because it stuffs matrix with "px"
+
+    if (supportProperty == "Moz" + suffix) {
+      propertyHook = {
+        get: function get(elem, computed) {
+          return computed ? // remove "px" from the computed matrix
+          $.css(elem, supportProperty).split("px").join("") : elem.style[supportProperty];
+        },
+        set: function set(elem, value) {
+          // add "px" to matrices
+          elem.style[supportProperty] = /matrix\([^)p]*\)/.test(value) ? value.replace(/matrix((?:[^,]*,){4})([^,]*),([^)]*)/, _matrix + "$1$2px,$3px") : value;
+        }
+      };
+      /* Fix two jQuery bugs still present in 1.5.1
+       * - rupper is incompatible with IE9, see http://jqbug.com/8346
+       * - jQuery.css is not really jQuery.cssProps aware, see http://jqbug.com/8402
+       */
+    } else if (/^1\.[0-5](?:\.|$)/.test($.fn.jquery)) {
+      propertyHook = {
+        get: function get(elem, computed) {
+          return computed ? $.css(elem, supportProperty.replace(/^ms/, "Ms")) : elem.style[supportProperty];
+        }
+      };
+    }
+    /* TODO: leverage hardware acceleration of 3d transform in Webkit only
+    else if ( supportProperty == "Webkit" + suffix && support3dTransform ) {
+      propertyHook = {
+        set: function( elem, value ) {
+          elem.style[supportProperty] =
+            value.replace();
+        }
+      }
+    }*/
+
+  } else if (supportMatrixFilter) {
+    propertyHook = {
+      get: function get(elem, computed, asArray) {
+        var elemStyle = computed && elem.currentStyle ? elem.currentStyle : elem.style,
+            matrix,
+            data;
+
+        if (elemStyle && rMatrix.test(elemStyle.filter)) {
+          matrix = RegExp.$1.split(",");
+          matrix = [matrix[0].split("=")[1], matrix[2].split("=")[1], matrix[1].split("=")[1], matrix[3].split("=")[1]];
+        } else {
+          matrix = [1, 0, 0, 1];
+        }
+
+        if (!$.cssHooks[_transformOrigin]) {
+          matrix[4] = elemStyle ? parseInt(elemStyle.left, 10) || 0 : 0;
+          matrix[5] = elemStyle ? parseInt(elemStyle.top, 10) || 0 : 0;
+        } else {
+          data = $._data(elem, "transformTranslate", undefined);
+          matrix[4] = data ? data[0] : 0;
+          matrix[5] = data ? data[1] : 0;
+        }
+
+        return asArray ? matrix : _matrix + "(" + matrix + ")";
+      },
+      set: function set(elem, value, animate) {
+        var elemStyle = elem.style,
+            currentStyle,
+            Matrix,
+            filter,
+            centerOrigin;
+
+        if (!animate) {
+          elemStyle.zoom = 1;
+        }
+
+        value = matrix(value); // rotate, scale and skew
+
+        Matrix = ["Matrix(" + "M11=" + value[0], "M12=" + value[2], "M21=" + value[1], "M22=" + value[3], "SizingMethod='auto expand'"].join();
+        filter = (currentStyle = elem.currentStyle) && currentStyle.filter || elemStyle.filter || "";
+        elemStyle.filter = rMatrix.test(filter) ? filter.replace(rMatrix, Matrix) : filter + " progid:DXImageTransform.Microsoft." + Matrix + ")";
+
+        if (!$.cssHooks[_transformOrigin]) {
+          // center the transform origin, from pbakaus's Transformie http://github.com/pbakaus/transformie
+          if (centerOrigin = $.transform.centerOrigin) {
+            elemStyle[centerOrigin == "margin" ? "marginLeft" : "left"] = -(elem.offsetWidth / 2) + elem.clientWidth / 2 + "px";
+            elemStyle[centerOrigin == "margin" ? "marginTop" : "top"] = -(elem.offsetHeight / 2) + elem.clientHeight / 2 + "px";
+          } // translate
+          // We assume that the elements are absolute positionned inside a relative positionned wrapper
+
+
+          elemStyle.left = value[4] + "px";
+          elemStyle.top = value[5] + "px";
+        } else {
+          $.cssHooks[_transformOrigin].set(elem, value);
+        }
+      }
+    };
+  } // populate jQuery.cssHooks with the appropriate hook if necessary
+
+
+  if (propertyHook) {
+    $.cssHooks[_transform] = propertyHook;
+  } // we need a unique setter for the animation logic
+
+
+  propertyGet = propertyHook && propertyHook.get || $.css;
+  /*
+   * fn.animate() hooks
+   */
+
+  $.fx.step.transform = function (fx) {
+    var elem = fx.elem,
+        start = fx.start,
+        end = fx.end,
+        pos = fx.pos,
+        transform = "",
+        precision = 1E5,
+        i,
+        startVal,
+        endVal,
+        unit; // fx.end and fx.start need to be converted to interpolation lists
+
+    if (!start || typeof start === "string") {
+      // the following block can be commented out with jQuery 1.5.1+, see #7912
+      if (!start) {
+        start = propertyGet(elem, supportProperty);
+      } // force layout only once per animation
+
+
+      if (supportMatrixFilter) {
+        elem.style.zoom = 1;
+      } // replace "+=" in relative animations (-= is meaningless with transforms)
+
+
+      end = end.split("+=").join(start); // parse both transform to generate interpolation list of same length
+
+      $.extend(fx, interpolationList(start, end));
+      start = fx.start;
+      end = fx.end;
+    }
+
+    i = start.length; // interpolate functions of the list one by one
+
+    while (i--) {
+      startVal = start[i];
+      endVal = end[i];
+      unit = +false;
+
+      switch (startVal[0]) {
+        case _translate:
+          unit = "px";
+
+        case _scale:
+          unit || (unit = "");
+          transform = startVal[0] + "(" + Math.round((startVal[1][0] + (endVal[1][0] - startVal[1][0]) * pos) * precision) / precision + unit + "," + Math.round((startVal[1][1] + (endVal[1][1] - startVal[1][1]) * pos) * precision) / precision + unit + ")" + transform;
+          break;
+
+        case _skew + "X":
+        case _skew + "Y":
+        case _rotate:
+          transform = startVal[0] + "(" + Math.round((startVal[1] + (endVal[1] - startVal[1]) * pos) * precision) / precision + "rad)" + transform;
+          break;
+      }
+    }
+
+    fx.origin && (transform = fx.origin + transform);
+    propertyHook && propertyHook.set ? propertyHook.set(elem, transform, +true) : elem.style[supportProperty] = transform;
+  };
+  /*
+   * Utility functions
+   */
+  // turns a transform string into its "matrix(A,B,C,D,X,Y)" form (as an array, though)
+
+
+  function matrix(transform) {
+    transform = transform.split(")");
+    var trim = $.trim,
+        i = -1 // last element of the array is an empty string, get rid of it
+    ,
+        l = transform.length - 1,
+        split,
+        prop,
+        val,
+        prev = supportFloat32Array ? new Float32Array(6) : [],
+        curr = supportFloat32Array ? new Float32Array(6) : [],
+        rslt = supportFloat32Array ? new Float32Array(6) : [1, 0, 0, 1, 0, 0];
+    prev[0] = prev[3] = rslt[0] = rslt[3] = 1;
+    prev[1] = prev[2] = prev[4] = prev[5] = 0; // Loop through the transform properties, parse and multiply them
+
+    while (++i < l) {
+      split = transform[i].split("(");
+      prop = trim(split[0]);
+      val = split[1];
+      curr[0] = curr[3] = 1;
+      curr[1] = curr[2] = curr[4] = curr[5] = 0;
+
+      switch (prop) {
+        case _translate + "X":
+          curr[4] = parseInt(val, 10);
+          break;
+
+        case _translate + "Y":
+          curr[5] = parseInt(val, 10);
+          break;
+
+        case _translate:
+          val = val.split(",");
+          curr[4] = parseInt(val[0], 10);
+          curr[5] = parseInt(val[1] || 0, 10);
+          break;
+
+        case _rotate:
+          val = toRadian(val);
+          curr[0] = Math.cos(val);
+          curr[1] = Math.sin(val);
+          curr[2] = -Math.sin(val);
+          curr[3] = Math.cos(val);
+          break;
+
+        case _scale + "X":
+          curr[0] = +val;
+          break;
+
+        case _scale + "Y":
+          curr[3] = val;
+          break;
+
+        case _scale:
+          val = val.split(",");
+          curr[0] = val[0];
+          curr[3] = val.length > 1 ? val[1] : val[0];
+          break;
+
+        case _skew + "X":
+          curr[2] = Math.tan(toRadian(val));
+          break;
+
+        case _skew + "Y":
+          curr[1] = Math.tan(toRadian(val));
+          break;
+
+        case _matrix:
+          val = val.split(",");
+          curr[0] = val[0];
+          curr[1] = val[1];
+          curr[2] = val[2];
+          curr[3] = val[3];
+          curr[4] = parseInt(val[4], 10);
+          curr[5] = parseInt(val[5], 10);
+          break;
+      } // Matrix product (array in column-major order)
+
+
+      rslt[0] = prev[0] * curr[0] + prev[2] * curr[1];
+      rslt[1] = prev[1] * curr[0] + prev[3] * curr[1];
+      rslt[2] = prev[0] * curr[2] + prev[2] * curr[3];
+      rslt[3] = prev[1] * curr[2] + prev[3] * curr[3];
+      rslt[4] = prev[0] * curr[4] + prev[2] * curr[5] + prev[4];
+      rslt[5] = prev[1] * curr[4] + prev[3] * curr[5] + prev[5];
+      prev = [rslt[0], rslt[1], rslt[2], rslt[3], rslt[4], rslt[5]];
+    }
+
+    return rslt;
+  } // turns a matrix into its rotate, scale and skew components
+  // algorithm from http://hg.mozilla.org/mozilla-central/file/7cb3e9795d04/layout/style/nsStyleAnimation.cpp
+
+
+  function unmatrix(matrix) {
+    var scaleX,
+        scaleY,
+        skew,
+        A = matrix[0],
+        B = matrix[1],
+        C = matrix[2],
+        D = matrix[3]; // Make sure matrix is not singular
+
+    if (A * D - B * C) {
+      // step (3)
+      scaleX = Math.sqrt(A * A + B * B);
+      A /= scaleX;
+      B /= scaleX; // step (4)
+
+      skew = A * C + B * D;
+      C -= A * skew;
+      D -= B * skew; // step (5)
+
+      scaleY = Math.sqrt(C * C + D * D);
+      C /= scaleY;
+      D /= scaleY;
+      skew /= scaleY; // step (6)
+
+      if (A * D < B * C) {
+        A = -A;
+        B = -B;
+        skew = -skew;
+        scaleX = -scaleX;
+      } // matrix is singular and cannot be interpolated
+
+    } else {
+      // In this case the elem shouldn't be rendered, hence scale == 0
+      scaleX = scaleY = skew = 0;
+    } // The recomposition order is very important
+    // see http://hg.mozilla.org/mozilla-central/file/7cb3e9795d04/layout/style/nsStyleAnimation.cpp#l971
+
+
+    return [[_translate, [+matrix[4], +matrix[5]]], [_rotate, Math.atan2(B, A)], [_skew + "X", Math.atan(skew)], [_scale, [scaleX, scaleY]]];
+  } // build the list of transform functions to interpolate
+  // use the algorithm described at http://dev.w3.org/csswg/css3-2d-transforms/#animation
+
+
+  function interpolationList(start, end) {
+    var list = {
+      start: [],
+      end: []
+    },
+        i = -1,
+        l,
+        currStart,
+        currEnd,
+        currType; // get rid of affine transform matrix
+
+    (start == "none" || isAffine(start)) && (start = "");
+    (end == "none" || isAffine(end)) && (end = ""); // if end starts with the current computed style, this is a relative animation
+    // store computed style as the origin, remove it from start and end
+
+    if (start && end && !end.indexOf("matrix") && toArray(start).join() == toArray(end.split(")")[0]).join()) {
+      list.origin = start;
+      start = "";
+      end = end.slice(end.indexOf(")") + 1);
+    }
+
+    if (!start && !end) {
+      return;
+    } // start or end are affine, or list of transform functions are identical
+    // => functions will be interpolated individually
+
+
+    if (!start || !end || functionList(start) == functionList(end)) {
+      start && (start = start.split(")")) && (l = start.length);
+      end && (end = end.split(")")) && (l = end.length);
+
+      while (++i < l - 1) {
+        start[i] && (currStart = start[i].split("("));
+        end[i] && (currEnd = end[i].split("("));
+        currType = $.trim((currStart || currEnd)[0]);
+        append(list.start, parseFunction(currType, currStart ? currStart[1] : 0));
+        append(list.end, parseFunction(currType, currEnd ? currEnd[1] : 0));
+      } // otherwise, functions will be composed to a single matrix
+
+    } else {
+      list.start = unmatrix(matrix(start));
+      list.end = unmatrix(matrix(end));
+    }
+
+    return list;
+  }
+
+  function parseFunction(type, value) {
+    var // default value is 1 for scale, 0 otherwise
+    defaultValue = +!type.indexOf(_scale),
+        scaleX,
+        // remove X/Y from scaleX/Y & translateX/Y, not from skew
+    cat = type.replace(/e[XY]/, "e");
+
+    switch (type) {
+      case _translate + "Y":
+      case _scale + "Y":
+        value = [defaultValue, value ? parseFloat(value) : defaultValue];
+        break;
+
+      case _translate + "X":
+      case _translate:
+      case _scale + "X":
+        scaleX = 1;
+
+      case _scale:
+        value = value ? (value = value.split(",")) && [parseFloat(value[0]), parseFloat(value.length > 1 ? value[1] : type == _scale ? scaleX || value[0] : defaultValue + "")] : [defaultValue, defaultValue];
+        break;
+
+      case _skew + "X":
+      case _skew + "Y":
+      case _rotate:
+        value = value ? toRadian(value) : 0;
+        break;
+
+      case _matrix:
+        return unmatrix(value ? toArray(value) : [1, 0, 0, 1, 0, 0]);
+        break;
+    }
+
+    return [[cat, value]];
+  }
+
+  function isAffine(matrix) {
+    return rAffine.test(matrix);
+  }
+
+  function functionList(transform) {
+    return transform.replace(/(?:\([^)]*\))|\s/g, "");
+  }
+
+  function append(arr1, arr2, value) {
+    while (value = arr2.shift()) {
+      arr1.push(value);
+    }
+  } // converts an angle string in any unit to a radian Float
+
+
+  function toRadian(value) {
+    return ~value.indexOf("deg") ? parseInt(value, 10) * (Math.PI * 2 / 360) : ~value.indexOf("grad") ? parseInt(value, 10) * (Math.PI / 200) : parseFloat(value);
+  } // Converts "matrix(A,B,C,D,X,Y)" to [A,B,C,D,X,Y]
+
+
+  function toArray(matrix) {
+    // remove the unit of X and Y for Firefox
+    matrix = /([^,]*),([^,]*),([^,]*),([^,]*),([^,p]*)(?:px)?,([^)p]*)(?:px)?/.exec(matrix);
+    return [matrix[1], matrix[2], matrix[3], matrix[4], matrix[5], matrix[6]];
+  }
+
+  $.transform = {
+    centerOrigin: "margin"
+  };
+})(jQuery, window, document, Math);
+
+/***/ }),
+
 /***/ "./resources/js/users.js":
 /*!*******************************!*\
   !*** ./resources/js/users.js ***!
@@ -37427,7 +38181,7 @@ $(document).on("change", "#file_photo", function (e) {
 /*! no static exports found */
 /***/ (function(module, exports) {
 
-// removed by extract-text-webpack-plugin
+throw new Error("Module build failed (from ./node_modules/css-loader/index.js):\nModuleNotFoundError: Module not found: Error: Can't resolve '../img/dislike_button.png' in '/Applications/MAMP/htdocs/techpit/techpit-Tinder/resources/sass'\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/webpack/lib/Compilation.js:925:10\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/webpack/lib/NormalModuleFactory.js:401:22\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/webpack/lib/NormalModuleFactory.js:130:21\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/webpack/lib/NormalModuleFactory.js:224:22\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/neo-async/async.js:2830:7\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/neo-async/async.js:6877:13\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/webpack/lib/NormalModuleFactory.js:214:25\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:213:14\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:13:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/UnsafeCachePlugin.js:44:7\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:13:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:25:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/DescriptionFilePlugin.js:67:43\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:14:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/RootPlugin.js:37:38\n    at _next43 (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:6:1)\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:29:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:25:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/DescriptionFilePlugin.js:67:43\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:14:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/Resolver.js:285:5\n    at eval (eval at create (/Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/tapable/lib/HookCodeFactory.js:33:10), <anonymous>:13:1)\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/DirectoryExistsPlugin.js:27:15\n    at /Applications/MAMP/htdocs/techpit/techpit-Tinder/node_modules/enhanced-resolve/lib/CachedInputFileSystem.js:85:15\n    at processTicksAndRejections (internal/process/task_queues.js:79:11)");
 
 /***/ }),
 
